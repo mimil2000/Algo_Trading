@@ -1,4 +1,5 @@
 "Description de la stratgégie :"
+import math
 
 import ta
 import pandas as pd
@@ -8,6 +9,7 @@ from datetime import datetime, timedelta
 from mplfinance.original_flavor import candlestick_ohlc
 import matplotlib.dates as mdates
 import mplfinance as mpf
+from dateutil.relativedelta import relativedelta
 
 def get_data_from_binance(start_date, end_date, step, devise):
     client = Client()
@@ -42,7 +44,6 @@ def compute_derivative(data,name_column):
 
     return data
 
-
 def smooth(data,name_column):
 
     if name_column not in data.columns:
@@ -56,16 +57,17 @@ def smooth(data,name_column):
     return data
 
 def open_long_position(position):
-    return position['ema30_derivative'] > (mean + std) and position['open'] > position['ema100'] and position['ema30'] - position['ema100']  > 0.2 * avg_dist
+    return position['ema30_derivative'] > (mean + 0.2*std) and position['open'] > position['ema100'] and position['ema30'] > position['ema100']             #position['ema30_derivative'] - position['ema100_derivative']  > 0
 
 def open_short_position(position):
-    return position['ema30_derivative'] <= (mean + std) #and position['open'] < position['ema15']
+
+    return position['ema30_derivative'] < (mean + 0.2 * std) and position['open'] < position['ema100'] and position['ema30'] < position['ema100']  # position['ema30_derivative'] - position['ema100_derivative']  > 0
 
 def close_long_position(position):
-    return position['ema30_derivative'] <= 0 or position['low'] <= position['ema30']
+    return position['ema30_derivative'] <= mean+0.5*std or position['ema30'] <= position['ema100']
 
 def close_short_position(position):
-    return position['ema30'] > position['ema100'] #position['close'] > position['ema30']
+    return position['ema30_derivative'] >= mean+0.5*std or position['ema30'] >= position['ema100']
 
 
 def show_graph(data):
@@ -87,8 +89,7 @@ def show_graph(data):
     # Tracer la dérivée sur le deuxième sous-graphique
     plt.plot(data.index, data['ema30_derivative'], label='Dérivée ema30', linewidth=1, color='orange')
     plt.plot(data.index, data['ema100_derivative'], label='Dérivée ema100', linewidth=1, color='blue')
-
-    plt.plot(data.index, data['ema30_derivative_smoothed'], label='Dérivée smooth ema30', linewidth=1, color='green')
+    plt.plot(data.index, data['ema30_derivative_derivative'], label='Dérivée seconde ema30', linewidth=1, color='green')
 
 
     plt.xlabel('Date')  # Corrected line
@@ -103,14 +104,15 @@ def show_graph(data):
 
 
     # Ajouter les constantes sur le graphique de la dérivée
-    plt.axhline(0, color='green', linestyle='dashed', linewidth=1, label='Moyenne')
-    plt.axhline(mean + std, color='orange', linestyle='dashed', linewidth=1, label='Moyenne + Écart-type')
-    plt.axhline(mean - std, color='orange', linestyle='dashed', linewidth=1, label='Moyenne - Écart-type')
+    plt.axhline(0, color='black', linestyle='dashed', linewidth=1, label='Moyenne')
+    plt.axhline(mean, color='green', linestyle='dashed', linewidth=1, label='Moyenne')
+    plt.axhline(0.5*std, color='orange', linestyle='dashed', linewidth=1, label='Moyenne + Écart-type')
+    plt.axhline(-0.5*std, color='orange', linestyle='dashed', linewidth=1, label='Moyenne - Écart-type')
 
     plt.xlabel('Date')  # Corrected line
     plt.ylabel('Dérivée ema30')  # Corrected line
     plt.tick_params(axis='y', labelcolor='red')
-    # plt.legend()
+    plt.legend()
     plt.xlabel('Date')  # Corrected line
 
     # Afficher les graphiques
@@ -132,36 +134,35 @@ class Wallet:
         self.buy_price = None
 
 
-if '__main__':
+def backtest_launch(start,end, underlying,interval, option,window):
+    global mean,std
 
+    do_long=False
+    do_short=False
 
-    start = datetime(2023, 11, 1)  # Définir la date de début
-    end = datetime(2023, 11, 28)  # Définir la date de fin
+    if option=='Short':
+        do_short=True
+    elif option=='Long':
+        do_long=True
+    else:
+        do_long=True
+        do_short=True
 
     current_date = start
-
+    previous_date= start - timedelta(days=int((window*100)//24))
     dataframe = pd.DataFrame()
-
 
 
     while current_date <= end - timedelta(days=1):
 
-        end_of_day = current_date + timedelta(days=4)
+        end_of_day = current_date + relativedelta(months=1)
 
-
-        data = get_data_from_binance(str(current_date), str(end_of_day), Client.KLINE_INTERVAL_5MINUTE, "BTCUSDT")
+        data = get_data_from_binance(str(previous_date), str(end_of_day), interval, underlying)
         data = add_ema_to_df(data, 30)
         data = add_ema_to_df(data, 100)
         data = compute_derivative(data,'ema30')
-        data=smooth(data,'ema30_derivative')
+        data = compute_derivative(data,'ema30_derivative')
         data = compute_derivative(data, 'ema100')
-        data=data[100:]
-
-        mean = data['ema30_derivative_smoothed'].mean()
-        std = data['ema30_derivative_smoothed'].std()
-
-        avg_dist= (abs(data['ema30']-data['ema100'])).mean()
-
 
         wallet = Wallet(1000)
         orderpossible = True
@@ -171,55 +172,144 @@ if '__main__':
         entry_prices = []
         exit_prices = []
 
-        for time in data.iterrows():
+        duree_minimale_entre_trades = 30*60
+        last_trade_date = None
+        trend_order = True
 
-            position = {'date': time[0], 'open': time[1][0], 'high': time[1][1], 'low': time[1][2], 'close': time[1][3],
-                        'ema30': time[1][11], 'ema100': time[1][12], 'ema30_derivative':time[1][13], 'ema30_derivative_smoothed':time[1][14], 'ema100_derivative':time[1][15]}
+        for i, (time_index, time_data) in enumerate(data.iterrows()):
+            if start < time_index:
 
-            if orderpossible:
+                index_positions = int(data.index.get_loc(time_index))
+                mean = data.iloc[int(index_positions - window * 24) + 1:index_positions + 1]['ema30_derivative'].mean()
+                std = data.iloc[int(index_positions - window * 24) + 1:index_positions + 1]['ema30_derivative'].std()
 
-                if open_long_position(position) and wallet.usdt > 0:
+                position = {
+                    'date': time_index,
+                    'open': time_data['open'],
+                    'high': time_data['high'],
+                    'low': time_data['low'],
+                    'close': time_data['close'],
+                    'ema30': time_data['ema30'],
+                    'ema100': time_data['ema100'],
+                    'ema30_derivative': time_data['ema30_derivative'],
+                    'ema30_derivative_derivative': time_data['ema30_derivative_derivative'],
+                    'ema100_derivative': time_data['ema100_derivative']
+                }
 
-                    orderpossible = False
+                if last_trade_date is not None and (position['date'] - last_trade_date).total_seconds() < duree_minimale_entre_trades:
+                    continue
+                coeff = position['ema30'] - position['ema100']
 
-                    wallet.coin = wallet.usdt / position['close']
-                    wallet.usdt = 0
-                    wallet.sellPrice = position['close']
+                if not trend_order :
+                    if math.copysign(1, coeff) == math.copysign(1, trend_coeff):
+                        trend_order = False
+                    else:
+                        trend_order = True
 
-                    entry_times.append(position['date'])
-                    entry_prices.append(position['close'])
+                if orderpossible and trend_order:
 
-                    if wallet.valo > wallet.last_ath:
-                        wallet.last_ath = wallet.valo
+                    if open_long_position(position) and wallet.usdt > 0 and do_long:
 
-                    myrow = {'date': position['date'], 'position': "Buy Long",
-                             'price': position['close'],
-                             'usdt': wallet.usdt, 'coins': wallet.coin, 'valo': wallet.valo,
-                             'drawBack': (wallet.valo - wallet.last_ath) / wallet.last_ath}
-                    df_row = pd.DataFrame([myrow])
-                    dt = pd.concat([dt, df_row], ignore_index=True)
+                        orderpossible = False
 
-            else:
+                        wallet.coin = wallet.usdt / position['close']
+                        wallet.usdt = 0
+                        wallet.sellPrice = position['close']
 
-                if close_long_position(position) and wallet.coin > 0:
+                        entry_times.append(position['date'])
+                        entry_prices.append(position['close'])
 
-                    orderpossible = True
+                        if wallet.valo > wallet.last_ath:
+                            wallet.last_ath = wallet.valo
 
-                    wallet.usdt = wallet.coin * position['close']
-                    wallet.coin = 0
-                    wallet.valo = wallet.usdt
+                        myrow = {'date': position['date'], 'position': "Buy Long",
+                                 'price': position['close'],
+                                 'usdt': wallet.usdt, 'coins': wallet.coin, 'valo': wallet.valo,
+                                 'drawBack': (wallet.valo - wallet.last_ath) / wallet.last_ath}
+                        df_row = pd.DataFrame([myrow])
+                        dt = pd.concat([dt, df_row], ignore_index=True)
 
-                    exit_times.append(position['date'])
-                    exit_prices.append(position['close'])
+                    # if open_short_position(position) and wallet.usdt > 0 and do_short:
+                    #
+                    #     orderpossible = False
+                    #
+                    #     open_short_usdt=wallet.usdt
+                    #
+                    #     wallet.coin = wallet.usdt / position['close']
+                    #     wallet.usdt = 0
+                    #     wallet.sellPrice = position['close']
+                    #
+                    #     entry_times.append(position['date'])
+                    #     entry_prices.append(position['close'])
+                    #
+                    #     if wallet.valo > wallet.last_ath:
+                    #         wallet.last_ath = wallet.valo
+                    #
+                    #     myrow = {'date': position['date'], 'position': "Buy Short",
+                    #              'price': position['close'],
+                    #              'usdt': wallet.usdt, 'coins': wallet.coin, 'valo': wallet.valo,
+                    #              'drawBack': (wallet.valo - wallet.last_ath) / wallet.last_ath}
+                    #     df_row = pd.DataFrame([myrow])
+                    #     dt = pd.concat([dt, df_row], ignore_index=True)
+                    #
+                    #     open_short_close= position['close']
 
-                    if wallet.valo > wallet.last_ath:
-                        wallet.last_ath = wallet.valo
 
-                    myrow = {'date': position['date'], 'position': "Sell Long",
-                             'price': position['close'], 'usdt': wallet.usdt, 'coins': wallet.coin,
-                             'valo': wallet.valo, 'drawBack': (wallet.valo - wallet.last_ath) / wallet.last_ath}
-                    df_row = pd.DataFrame([myrow])
-                    dt = pd.concat([dt, df_row], ignore_index=True)
+                else:
+
+                    if close_long_position(position) and wallet.coin > 0 and do_long:
+
+                        orderpossible = True
+
+                        wallet.usdt = wallet.coin * position['close']
+                        wallet.coin = 0
+                        wallet.valo = wallet.usdt
+
+                        exit_times.append(position['date'])
+                        exit_prices.append(position['close'])
+
+                        if wallet.valo > wallet.last_ath:
+                            wallet.last_ath = wallet.valo
+
+                        myrow = {'date': position['date'], 'position': "Sell Long",
+                                 'price': position['close'], 'usdt': wallet.usdt, 'coins': wallet.coin,
+                                 'valo': wallet.valo, 'drawBack': (wallet.valo - wallet.last_ath) / wallet.last_ath}
+                        df_row = pd.DataFrame([myrow])
+                        dt = pd.concat([dt, df_row], ignore_index=True)
+
+                        trend_coeff = position['ema30'] - position['ema100']
+
+                        trend_order = False
+
+                    # if close_short_position(position) and wallet.coin > 0 and do_short:
+                    #
+                    #     trend_coeff = position['ema30'] - position['ema100']
+                    #
+                    #     trend_order= False
+                    #
+                    #     orderpossible = True
+                    #
+                    #     price_to_refund=wallet.coin*position['close']
+                    #     PandL=open_short_usdt-price_to_refund
+                    #     wallet.usdt = PandL +  open_short_usdt
+                    #     wallet.coin = 0
+                    #     wallet.valo = wallet.usdt
+                    #
+                    #     exit_times.append(position['date'])
+                    #     exit_prices.append(position['close'])
+                    #
+                    #     if wallet.valo > wallet.last_ath:
+                    #         wallet.last_ath = wallet.valo
+                    #
+                    #     myrow = {'date': position['date'], 'position': "Sell Short",
+                    #              'price': position['close'], 'usdt': wallet.usdt, 'coins': wallet.coin,
+                    #              'valo': wallet.valo, 'drawBack': (wallet.valo - wallet.last_ath) / wallet.last_ath}
+                    #     df_row = pd.DataFrame([myrow])
+                    #     dt = pd.concat([dt, df_row], ignore_index=True)
+                    #
+                    #     trend_coeff = position['ema30'] - position['ema100']
+                    #
+                    #     trend_order= False
 
         ### Résultats ###
 
@@ -242,64 +332,65 @@ if '__main__':
         vsHoldPorcentage = ((algoPorcentage - holdPorcentage))
 
 
-        print("Starting balance : 1000 $")
-        print("Final balance :", round(wallet.valo, 2), "$")
-        print("Algo Performance:", round(algoPorcentage, 2), "%")
-        print("Buy and Hold Performance :", round(holdPorcentage, 2), "%")
-        print("Algo vs Buy and Hold :", round(vsHoldPorcentage, 2), "%")
+        # print("Starting balance : 1000 $")
+        # print("Final balance :", round(wallet.valo, 2), "$")
+        # print("Algo Performance:", round(algoPorcentage, 2), "%")
+        # print("Buy and Hold Performance :", round(holdPorcentage, 2), "%")
+        # print("Algo vs Buy and Hold :", round(vsHoldPorcentage, 2), "%")
         x = len([x for x in dt["tradeIs"] if x == "Good"])
         y = len([x for x in dt["tradeIs"] if x == "Bad"])
-        print("Number positive trades:", x)
-        print("Number negative trades:", y)
+        # print("Number positive trades:", x)
+        # print("Number negative trades:", y)
 
         dt['resultat%'] = pd.to_numeric(dt['resultat%'], errors='coerce')
 
+        #
+        # if x != 0:
+        #     print("Average Positive Trades : ", round(
+        #         dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].sum() / dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].count(), 2),
+        #           "%")
+        #     idbest = dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].idxmax()
+        #     print("Best trade +" + str(round(dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].max(), 2)), "%, the ",
+        #           dt['date'][idbest])
+        # else:
+        #     print("Average Positive Trades : ", 0)
+        # if y != 0:
+        #     print("Average Negative Trades : ",
+        #           round(dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].sum() / dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].count(),
+        #                 2), "%")
+        #     idworst = dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].idxmin()
+        #     print("Worst trade", round(dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].min(), 2), "%, the ", dt['date'][idworst])
+        # else:
+        #     print("Average Negative Trades : ", 0)
+        # print("Worst drawBack", str(100 * round(dt['drawBack'].min(), 2)), "%")
+        #
+        # data['date'] = pd.to_datetime(data.index)
+        # data['date'] = data['date'].apply(mdates.date2num)
+        #
+        # # Create subplots with shared x-axis
+        # fig, ax1 = plt.subplots()
+        #
+        # # Plot candlestick chart
+        # ax1.xaxis_date()
+        # ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        # ax1.plot(data['date'], data['open'], label='Open', linewidth=1, color='black', linestyle='dashed')
+        # ax1.plot(data['date'], data['high'], label='High', linewidth=1, color='green')
+        # ax1.plot(data['date'], data['low'], label='Low', linewidth=1, color='red')
+        # ax1.plot(data['date'], data['close'], label='Close', linewidth=1, color='black')
+        #
+        # # Overlay moving averages on the same plot
+        # ax1.plot(data['date'], data['ema30'], label='ema30', linewidth=1, color='green')
+        # ax1.plot(data['date'], data['ema100'], label='EMA100', linewidth=1, color='orange')
+        #
+        # # Plot entry and exit points
+        # ax1.scatter(entry_times, entry_prices, marker='^', color='g', label='Entry Position', s=100)
+        # ax1.scatter(exit_times, exit_prices, marker='v', color='r', label='Exit Position', s=100)
+        #
+        # # Set labels and title
+        # ax1.set_xlabel('Date')
+        # ax1.set_ylabel('Price')
+        # ax1.set_title('Candlestick Chart with Moving Averages')
 
-        if x != 0:
-            print("Average Positive Trades : ", round(
-                dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].sum() / dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].count(), 2),
-                  "%")
-            idbest = dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].idxmax()
-            print("Best trade +" + str(round(dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].max(), 2)), "%, the ",
-                  dt['date'][idbest])
-        else:
-            print("Average Positive Trades : ", 0)
-        if y != 0:
-            print("Average Negative Trades : ",
-                  round(dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].sum() / dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].count(),
-                        2), "%")
-            idworst = dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].idxmin()
-            print("Worst trade", round(dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].min(), 2), "%, the ", dt['date'][idworst])
-        else:
-            print("Average Negative Trades : ", 0)
-        print("Worst drawBack", str(100 * round(dt['drawBack'].min(), 2)), "%")
-
-        data['date'] = pd.to_datetime(data.index)
-        data['date'] = data['date'].apply(mdates.date2num)
-
-        # Create subplots with shared x-axis
-        fig, ax1 = plt.subplots()
-
-        # Plot candlestick chart
-        ax1.xaxis_date()
-        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        ax1.plot(data['date'], data['open'], label='Open', linewidth=1, color='black', linestyle='dashed')
-        ax1.plot(data['date'], data['high'], label='High', linewidth=1, color='green')
-        ax1.plot(data['date'], data['low'], label='Low', linewidth=1, color='red')
-        ax1.plot(data['date'], data['close'], label='Close', linewidth=1, color='black')
-
-        # Overlay moving averages on the same plot
-        ax1.plot(data['date'], data['ema30'], label='ema30', linewidth=1, color='green')
-        ax1.plot(data['date'], data['ema100'], label='EMA100', linewidth=1, color='orange')
-
-        # Plot entry and exit points
-        ax1.scatter(entry_times, entry_prices, marker='^', color='g', label='Entry Position', s=100)
-        ax1.scatter(exit_times, exit_prices, marker='v', color='r', label='Exit Position', s=100)
-
-        # Set labels and title
-        ax1.set_xlabel('Date')
-        ax1.set_ylabel('Price')
-        ax1.set_title('Candlestick Chart with Moving Averages')
 
         myrowfinal = {'Start':current_date,'S_balance': 1000, 'E_balance': round(wallet.valo, 2), 'Algo_perce': round(algoPorcentage, 2),
                  'Buy&Hold':  round(holdPorcentage, 2), 'vsHoldPorcentage': round(vsHoldPorcentage, 2), 'Nb_positive': x,
@@ -307,9 +398,9 @@ if '__main__':
         df_row_final = pd.DataFrame([myrowfinal])
         dataframe = pd.concat([dataframe, df_row_final], ignore_index=True)
 
-        current_date += timedelta(days=1)
-    print()
-    print('cc')
+        current_date += relativedelta(months=1)
+    return dataframe
+
 
 
 
