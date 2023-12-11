@@ -133,10 +133,11 @@ class Wallet:
         self.take_profit = 0
         self.buy_price = None
 
-
 def backtest_launch(start,end, underlying,interval, option,window):
-    global mean,std
 
+    global mean,std
+    dataframe = pd.DataFrame()
+    dt_final = pd.DataFrame()
     do_long=False
     do_short=False
 
@@ -150,11 +151,19 @@ def backtest_launch(start,end, underlying,interval, option,window):
 
     current_date = start
     previous_date= start - timedelta(days=int((window*100)//24))
-    dataframe = pd.DataFrame()
 
+    wallet = Wallet(1000)
+    orderpossible = True
+    dt = pd.DataFrame(columns=['date', 'position', 'price', 'usdt', 'coins', 'valo', 'drawBack'])
+
+    duree_minimale_entre_trades = window * 60 * 60
 
     while current_date <= end - timedelta(days=1):
+        df_row_final = pd.DataFrame()
+        dt = pd.DataFrame()
+        dt_row = pd.DataFrame()
 
+        previous_date = current_date - timedelta(days=int((window * 100) // 24))
         end_of_day = current_date + relativedelta(months=1)
 
         data = get_data_from_binance(str(previous_date), str(end_of_day), interval, underlying)
@@ -164,17 +173,15 @@ def backtest_launch(start,end, underlying,interval, option,window):
         data = compute_derivative(data,'ema30_derivative')
         data = compute_derivative(data, 'ema100')
 
-        wallet = Wallet(1000)
-        orderpossible = True
-        dt = pd.DataFrame(columns=['date', 'position', 'price', 'usdt', 'coins', 'valo', 'drawBack'])
         entry_times = []
         exit_times = []
         entry_prices = []
         exit_prices = []
 
-        duree_minimale_entre_trades = 30*60
+
         last_trade_date = None
         trend_order = True
+
 
         for i, (time_index, time_data) in enumerate(data.iterrows()):
             if start < time_index:
@@ -312,94 +319,96 @@ def backtest_launch(start,end, underlying,interval, option,window):
                     #     trend_order= False
 
         ### Résultats ###
+        if not dt.empty:
+            dt['resultat'] = dt['valo'] - dt['valo'].shift(1)
 
-        dt['resultat'] = dt['valo'] - dt['valo'].shift(1)
+            dt['resultat%'] = ((dt['valo'] - dt['valo'].shift(1)) / dt['valo'].shift(1)) * 100
 
-        dt['resultat%'] = ((dt['valo'] - dt['valo'].shift(1)) / dt['valo'].shift(1)) * 100
+            dt.loc[dt['position'] == 'Buy Short', 'resultat'] = None
+            dt.loc[dt['position'] == 'Buy Long', 'resultat%'] = None
 
-        dt.loc[dt['position'] == 'Buy Short', 'resultat'] = None
-        dt.loc[dt['position'] == 'Buy Long', 'resultat%'] = None
+            dt['tradeIs'] = None
 
-        dt['tradeIs'] = None
+            dt.loc[dt['resultat'] > 0, 'tradeIs'] = 'Good'
+            dt.loc[dt['resultat'] < 0, 'tradeIs'] = 'Bad'
 
-        dt.loc[dt['resultat'] > 0, 'tradeIs'] = 'Good'
-        dt.loc[dt['resultat'] < 0, 'tradeIs'] = 'Bad'
-
-        iniClose = data.iloc[0]['close']
-        lastClose = data.iloc[len(data) - 1]['close']
-        holdPorcentage = ((lastClose - iniClose) / iniClose) * 100
-        algoPorcentage = ((wallet.valo - wallet.initalWallet) / wallet.initalWallet) * 100
-        vsHoldPorcentage = ((algoPorcentage - holdPorcentage))
-
-
-        # print("Starting balance : 1000 $")
-        # print("Final balance :", round(wallet.valo, 2), "$")
-        # print("Algo Performance:", round(algoPorcentage, 2), "%")
-        # print("Buy and Hold Performance :", round(holdPorcentage, 2), "%")
-        # print("Algo vs Buy and Hold :", round(vsHoldPorcentage, 2), "%")
-        x = len([x for x in dt["tradeIs"] if x == "Good"])
-        y = len([x for x in dt["tradeIs"] if x == "Bad"])
-        # print("Number positive trades:", x)
-        # print("Number negative trades:", y)
-
-        dt['resultat%'] = pd.to_numeric(dt['resultat%'], errors='coerce')
-
-        #
-        # if x != 0:
-        #     print("Average Positive Trades : ", round(
-        #         dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].sum() / dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].count(), 2),
-        #           "%")
-        #     idbest = dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].idxmax()
-        #     print("Best trade +" + str(round(dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].max(), 2)), "%, the ",
-        #           dt['date'][idbest])
-        # else:
-        #     print("Average Positive Trades : ", 0)
-        # if y != 0:
-        #     print("Average Negative Trades : ",
-        #           round(dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].sum() / dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].count(),
-        #                 2), "%")
-        #     idworst = dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].idxmin()
-        #     print("Worst trade", round(dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].min(), 2), "%, the ", dt['date'][idworst])
-        # else:
-        #     print("Average Negative Trades : ", 0)
-        # print("Worst drawBack", str(100 * round(dt['drawBack'].min(), 2)), "%")
-        #
-        # data['date'] = pd.to_datetime(data.index)
-        # data['date'] = data['date'].apply(mdates.date2num)
-        #
-        # # Create subplots with shared x-axis
-        # fig, ax1 = plt.subplots()
-        #
-        # # Plot candlestick chart
-        # ax1.xaxis_date()
-        # ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        # ax1.plot(data['date'], data['open'], label='Open', linewidth=1, color='black', linestyle='dashed')
-        # ax1.plot(data['date'], data['high'], label='High', linewidth=1, color='green')
-        # ax1.plot(data['date'], data['low'], label='Low', linewidth=1, color='red')
-        # ax1.plot(data['date'], data['close'], label='Close', linewidth=1, color='black')
-        #
-        # # Overlay moving averages on the same plot
-        # ax1.plot(data['date'], data['ema30'], label='ema30', linewidth=1, color='green')
-        # ax1.plot(data['date'], data['ema100'], label='EMA100', linewidth=1, color='orange')
-        #
-        # # Plot entry and exit points
-        # ax1.scatter(entry_times, entry_prices, marker='^', color='g', label='Entry Position', s=100)
-        # ax1.scatter(exit_times, exit_prices, marker='v', color='r', label='Exit Position', s=100)
-        #
-        # # Set labels and title
-        # ax1.set_xlabel('Date')
-        # ax1.set_ylabel('Price')
-        # ax1.set_title('Candlestick Chart with Moving Averages')
+            iniClose = data.iloc[0]['close']
+            lastClose = data.iloc[len(data) - 1]['close']
+            holdPorcentage = ((lastClose - iniClose) / iniClose) * 100
+            algoPorcentage = ((wallet.valo - wallet.initalWallet) / wallet.initalWallet) * 100
+            vsHoldPorcentage = ((algoPorcentage - holdPorcentage))
 
 
-        myrowfinal = {'Start':current_date,'S_balance': 1000, 'E_balance': round(wallet.valo, 2), 'Algo_perce': round(algoPorcentage, 2),
-                 'Buy&Hold':  round(holdPorcentage, 2), 'vsHoldPorcentage': round(vsHoldPorcentage, 2), 'Nb_positive': x,
-                 'Nb_negative': y}
-        df_row_final = pd.DataFrame([myrowfinal])
-        dataframe = pd.concat([dataframe, df_row_final], ignore_index=True)
+            # print("Starting balance : 1000 $")
+            # print("Final balance :", round(wallet.valo, 2), "$")
+            # print("Algo Performance:", round(algoPorcentage, 2), "%")
+            # print("Buy and Hold Performance :", round(holdPorcentage, 2), "%")
+            # print("Algo vs Buy and Hold :", round(vsHoldPorcentage, 2), "%")
+            x = len([x for x in dt["tradeIs"] if x == "Good"])
+            y = len([x for x in dt["tradeIs"] if x == "Bad"])
+            # print("Number positive trades:", x)
+            # print("Number negative trades:", y)
 
-        current_date += relativedelta(months=1)
-    return dataframe
+            dt['resultat%'] = pd.to_numeric(dt['resultat%'], errors='coerce')
+
+            #
+            # if x != 0:
+            #     print("Average Positive Trades : ", round(
+            #         dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].sum() / dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].count(), 2),
+            #           "%")
+            #     idbest = dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].idxmax()
+            #     print("Best trade +" + str(round(dt.loc[dt['tradeIs'] == 'Good', 'resultat%'].max(), 2)), "%, the ",
+            #           dt['date'][idbest])
+            # else:
+            #     print("Average Positive Trades : ", 0)
+            # if y != 0:
+            #     print("Average Negative Trades : ",
+            #           round(dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].sum() / dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].count(),
+            #                 2), "%")
+            #     idworst = dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].idxmin()
+            #     print("Worst trade", round(dt.loc[dt['tradeIs'] == 'Bad', 'resultat%'].min(), 2), "%, the ", dt['date'][idworst])
+            # else:
+            #     print("Average Negative Trades : ", 0)
+            # print("Worst drawBack", str(100 * round(dt['drawBack'].min(), 2)), "%")
+            #
+            # data['date'] = pd.to_datetime(data.index)
+            # data['date'] = data['date'].apply(mdates.date2num)
+            #
+            # # Create subplots with shared x-axis
+            # fig, ax1 = plt.subplots()
+            #
+            # # Plot candlestick chart
+            # ax1.xaxis_date()
+            # ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            # ax1.plot(data['date'], data['open'], label='Open', linewidth=1, color='black', linestyle='dashed')
+            # ax1.plot(data['date'], data['high'], label='High', linewidth=1, color='green')
+            # ax1.plot(data['date'], data['low'], label='Low', linewidth=1, color='red')
+            # ax1.plot(data['date'], data['close'], label='Close', linewidth=1, color='black')
+            #
+            # # Overlay moving averages on the same plot
+            # ax1.plot(data['date'], data['ema30'], label='ema30', linewidth=1, color='green')
+            # ax1.plot(data['date'], data['ema100'], label='EMA100', linewidth=1, color='orange')
+            #
+            # # Plot entry and exit points
+            # ax1.scatter(entry_times, entry_prices, marker='^', color='g', label='Entry Position', s=100)
+            # ax1.scatter(exit_times, exit_prices, marker='v', color='r', label='Exit Position', s=100)
+            #
+            # # Set labels and title
+            # ax1.set_xlabel('Date')
+            # ax1.set_ylabel('Price')
+            # ax1.set_title('Candlestick Chart with Moving Averages')
+
+
+            myrowfinal = {'Start':current_date,'S_balance': 1000, 'E_balance': round(wallet.valo, 2), 'Algo_perce': round(algoPorcentage, 2),
+                     'Buy&Hold':  round(holdPorcentage, 2), 'vsHoldPorcentage': round(vsHoldPorcentage, 2), 'Nb_positive': x,
+                     'Nb_negative': y}
+            df_row_final = pd.DataFrame([myrowfinal])
+            dataframe = pd.concat([dataframe, df_row_final], ignore_index=True)
+            dt_final = pd.concat([dt_final, dt], ignore_index=True)
+            current_date += relativedelta(months=1)
+
+    return dataframe, dt_final
+
 
 
 
