@@ -1,6 +1,7 @@
 import vectorbt as vbt
 import datetime
 import numpy as np
+import pandas as pd
 
 end_date = datetime.datetime.now()
 start_date = end_date - datetime.timedelta(days=10)
@@ -14,11 +15,19 @@ btc_price = vbt.YFData.download(
 
 rsi = vbt.RSI.run(btc_price, window=14)
 
-def custom_indicator(close, rsi_window, ma_window):
-    rsi = vbt.RSI.run(close, window=rsi_window).rsi.to_numpy()
-    ma = vbt.MA.run(close, ma_window).ma.to_numpy()
-    trend = np.where(rsi > 70, -1, 0)
-    trend = np.where( (rsi < 30) & (close<ma), 1, trend)
+def custom_indicator(close, ma_window1, ma_window2, mstd_window,mean_window):
+
+    ma1 = vbt.MA.run(close, ma_window1).ma.to_numpy()
+    ma2 = vbt.MA.run(close, ma_window2).ma.to_numpy()
+    ma1diff = pd.DataFrame(ma1).diff().values
+    ma2diff = pd.DataFrame(ma2).diff().values
+
+    mstd = vbt.MSTD.run(ma1diff, mstd_window).mstd.to_numpy()
+    mean = vbt.MA.run(ma1diff, mean_window).ma.to_numpy()
+
+    trend = np.where(close <= mean + 0.5 * mstd, -1, 0)
+    trend = np.where(close > mean + 0.2*mstd, 1, trend)
+
     return trend
 
 
@@ -26,13 +35,15 @@ indic = vbt.IndicatorFactory(
     class_name="Combination",
     short_name="comb",
     input_names=["close"],
-    param_names=["rsi_window","ma_window"],
+    param_names=["ma1_window","ma2_window",'mstd_window','mean_window'],
     output_names=["value"]
-).from_apply_func(custom_indicator, rsi_window=21, ma_window=50)
+).from_apply_func(custom_indicator, ma1_window=21, ma2_window=50, mstd_window=12,mean_window=12)
 
 res = indic.run(btc_price,
-                rsi_window = [10,20,30],
-                ma_window = [20,50,200],
+                ma1_window = [30],
+                ma2_window = [100],
+                mstd_window = [10],
+                mean_window = [10],
                 param_product=True)
 
 
